@@ -6,8 +6,8 @@ Requires=@DRAFTER_AGENT_SYSTEMD_DEPENDENCY@
 [Service]
 Type=simple
 ExecStart=/usr/bin/drafter-agent --vsock-port @DRAFTER_AGENT_VSOCK_PORT@
-StandardOutput=journal+console
-StandardError=journal+console
+StandardOutput=file:/dev/kmsg
+StandardError=file:/dev/kmsg
 Restart=always
 
 [Install]

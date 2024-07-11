@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
+	"github.com/loopholelabs/logging"
+	"github.com/loopholelabs/sentry/pkg/rpc"
+	"github.com/loopholelabs/sentry/pkg/vsock"
 	"log"
 	"os"
 	"os/exec"
@@ -13,12 +15,24 @@ import (
 
 	"github.com/loopholelabs/drafter/pkg/ipc"
 	"github.com/loopholelabs/drafter/pkg/utils"
+	"github.com/loopholelabs/sentry/pkg/client"
 )
+
+func handle(beforeSuspend func(ctx context.Context) error, afterResume func(ctx context.Context) error) rpc.HandleFunc {
+	return func(request *rpc.Request, response *rpc.Response) {
+		switch request.Type {
+		case ipc.BeforeSuspendType:
+			_ = beforeSuspend(context.Background())
+		case ipc.AfterResumeType:
+			_ = afterResume(context.Background())
+		}
+	}
+}
 
 func main() {
 	vsockPort := flag.Uint("vsock-port", 26, "VSock port")
 	vsockTimeout := flag.Duration("vsock-timeout", time.Minute, "VSock dial timeout")
-
+	_ = vsockTimeout
 	shellCmd := flag.String("shell-cmd", "sh", "Shell to use to run the before suspend and after resume commands")
 	beforeSuspendCmd := flag.String("before-suspend-cmd", "", "Command to run before the VM is suspended (leave empty to disable)")
 	afterResumeCmd := flag.String("after-resume-cmd", "", "Command to run after the VM has been resumed (leave empty to disable)")
@@ -35,7 +49,7 @@ func main() {
 		}
 	}()
 
-	ctx, handlePanics, _, cancel, wait, errFinished := utils.GetPanicHandler(
+	ctx, handlePanics, _, cancel, wait, _ := utils.GetPanicHandler(
 		ctx,
 		&errs,
 		utils.GetPanicHandlerHooks{},
@@ -55,7 +69,12 @@ func main() {
 		cancel()
 	}()
 
-	agentClient := ipc.NewAgentClient(
+	dialFunc, err := vsock.DialFunc(ipc.VSockCIDHost, uint32(*vsockPort))
+	if err != nil {
+		panic(err)
+	}
+
+	handleFunc := handle(
 		func(ctx context.Context) error {
 			log.Println("Running pre-suspend command")
 
@@ -85,45 +104,18 @@ func main() {
 			}
 
 			return nil
-		},
-	)
+		})
 
-	for {
-		if err := func() error {
-			log.Println("Connecting to host")
-
-			dialCtx, cancelDialCtx := context.WithTimeout(ctx, *vsockTimeout)
-			defer cancelDialCtx()
-
-			connectedAgentClient, err := ipc.StartAgentClient(
-				dialCtx,
-				ctx,
-
-				ipc.VSockCIDHost,
-				uint32(*vsockPort),
-
-				agentClient,
-			)
-			if err != nil {
-				return err
-			}
-			defer connectedAgentClient.Close()
-
-			log.Println("Connected to host")
-
-			return connectedAgentClient.Wait()
-		}(); err != nil {
-			if !(errors.Is(err, context.Canceled) && errors.Is(context.Cause(ctx), errFinished)) {
-				log.Println("Disconnected from host with error, reconnecting:", err)
-
-				continue
-			}
-
-			panic(err)
-		}
-
-		break
+	sentry, err := client.New(&client.Options{
+		Handle: handleFunc,
+		Dial:   dialFunc,
+		Logger: logging.NewNoopLogger(),
+	})
+	if err != nil {
+		panic(err)
 	}
 
-	log.Println("Shutting down")
+	log.Println("waiting forever")
+	select {}
+	_ = sentry
 }

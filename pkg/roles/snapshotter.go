@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -13,10 +14,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/loopholelabs/drafter/internal/firecracker"
 	iutils "github.com/loopholelabs/drafter/internal/utils"
 	"github.com/loopholelabs/drafter/pkg/ipc"
 	"github.com/loopholelabs/drafter/pkg/utils"
+	"github.com/loopholelabs/logging"
+	"github.com/loopholelabs/sentry/pkg/rpc"
+	"github.com/loopholelabs/sentry/pkg/server"
 )
 
 var (
@@ -81,7 +86,7 @@ func CreateSnapshot(
 		panic(errors.Join(ErrCouldNotCreateChrootBaseDirectory, err))
 	}
 
-	server, err := firecracker.StartFirecrackerServer(
+	fcServer, err := firecracker.StartFirecrackerServer(
 		ctx,
 
 		hypervisorConfiguration.FirecrackerBin,
@@ -102,18 +107,18 @@ func CreateSnapshot(
 	if err != nil {
 		panic(errors.Join(ErrCouldNotStartFirecrackerServer, err))
 	}
-	defer server.Close()
-	defer os.RemoveAll(filepath.Dir(server.VMPath)) // Remove `firecracker/$id`, not just `firecracker/$id/root`
+	defer fcServer.Close()
+	defer os.RemoveAll(filepath.Dir(fcServer.VMPath)) // Remove `firecracker/$id`, not just `firecracker/$id/root`
 
 	handleGoroutinePanics(true, func() {
-		if err := server.Wait(); err != nil {
+		if err := fcServer.Wait(); err != nil {
 			panic(errors.Join(ErrCouldNotWaitForFirecrackerServer, err))
 		}
 	})
 
 	liveness := ipc.NewLivenessServer(
-		filepath.Join(server.VMPath, VSockName),
-		uint32(livenessConfiguration.LivenessVSockPort),
+		filepath.Join(fcServer.VMPath, VSockName),
+		livenessConfiguration.LivenessVSockPort,
 	)
 
 	livenessVSockPath, err := liveness.Open()
@@ -126,23 +131,25 @@ func CreateSnapshot(
 		panic(errors.Join(ErrCouldNotChownLivenessServerVSock, err))
 	}
 
-	agent, err := ipc.StartAgentServer(
-		filepath.Join(server.VMPath, VSockName),
-		uint32(agentConfiguration.AgentVSockPort),
-	)
+	sentryPath := fmt.Sprintf("%s_%d", filepath.Join(fcServer.VMPath, VSockName), agentConfiguration.AgentVSockPort)
+	sentry, err := server.New(&server.Options{
+		UnixPath: sentryPath,
+		MaxConn:  32,
+		Logger:   logging.NewNoopLogger(),
+	})
 	if err != nil {
 		panic(errors.Join(ErrCouldNotStartAgentServer, err))
 	}
-	defer agent.Close()
+	defer sentry.Close()
 
-	if err := os.Chown(agent.VSockPath, hypervisorConfiguration.UID, hypervisorConfiguration.GID); err != nil {
+	if err := os.Chown(sentryPath, hypervisorConfiguration.UID, hypervisorConfiguration.GID); err != nil {
 		panic(errors.Join(ErrCouldNotChownAgentServerVSock, err))
 	}
 
 	client := &http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, "unix", filepath.Join(server.VMPath, firecracker.FirecrackerSocketName))
+				return (&net.Dialer{}).DialContext(ctx, "unix", filepath.Join(fcServer.VMPath, firecracker.FirecrackerSocketName))
 			},
 		},
 	}
@@ -155,7 +162,7 @@ func CreateSnapshot(
 		}
 
 		for _, device := range devices {
-			inputFile, err := os.Open(filepath.Join(server.VMPath, device.Name))
+			inputFile, err := os.Open(filepath.Join(fcServer.VMPath, device.Name))
 			if err != nil {
 				panic(errors.Join(ErrCouldNotOpenInputFile, err))
 			}
@@ -184,12 +191,12 @@ func CreateSnapshot(
 		}
 	}()
 	// We need to stop the Firecracker process from using the mount before we can unmount it
-	defer server.Close()
+	defer fcServer.Close()
 
 	disks := []string{}
 	for _, device := range devices {
 		if strings.TrimSpace(device.Input) != "" {
-			if _, err := iutils.CopyFile(device.Input, filepath.Join(server.VMPath, device.Name), hypervisorConfiguration.UID, hypervisorConfiguration.GID); err != nil {
+			if _, err := iutils.CopyFile(device.Input, filepath.Join(fcServer.VMPath, device.Name), hypervisorConfiguration.UID, hypervisorConfiguration.GID); err != nil {
 				panic(errors.Join(ErrCouldNotCopyDeviceFile, err))
 			}
 		}
@@ -221,7 +228,7 @@ func CreateSnapshot(
 	); err != nil {
 		panic(errors.Join(ErrCouldNotStartVM, err))
 	}
-	defer os.Remove(filepath.Join(server.VMPath, VSockName))
+	defer os.Remove(filepath.Join(fcServer.VMPath, VSockName))
 
 	{
 		receiveCtx, cancel := context.WithTimeout(ctx, livenessConfiguration.ResumeTimeout)
@@ -232,34 +239,26 @@ func CreateSnapshot(
 		}
 	}
 
-	var acceptingAgent *ipc.AcceptingAgentServer
 	{
-		acceptCtx, cancel := context.WithTimeout(ctx, agentConfiguration.ResumeTimeout)
+		beforeSuspendCtx, cancel := context.WithTimeout(ctx, agentConfiguration.ResumeTimeout)
 		defer cancel()
 
-		acceptingAgent, err = agent.Accept(acceptCtx, ctx)
-		if err != nil {
-			panic(errors.Join(ErrCouldNotAcceptAgentConnection, err))
+		request := rpc.Request{
+			UUID: uuid.New(),
+			Type: ipc.BeforeSuspendType,
+			Data: nil,
 		}
-		defer acceptingAgent.Close()
+		var response rpc.Response
 
-		handleGoroutinePanics(true, func() {
-			if err := acceptingAgent.Wait(); err != nil {
-				panic(errors.Join(ErrCouldNotWaitForAcceptingAgent, err))
-			}
-		})
-
-		if err := acceptingAgent.Remote.BeforeSuspend(acceptCtx); err != nil {
+		err = sentry.Do(beforeSuspendCtx, &request, &response)
+		if err != nil {
 			panic(errors.Join(ErrCouldNotBeforeSuspend, err))
 		}
 	}
 
 	// Connections need to be closed before creating the snapshot
 	liveness.Close()
-	if err := acceptingAgent.Close(); err != nil {
-		panic(errors.Join(ErrCouldNotCloseAcceptingAgent, err))
-	}
-	agent.Close()
+	_ = sentry.Close()
 
 	if err := firecracker.CreateSnapshot(
 		ctx,
@@ -281,7 +280,7 @@ func CreateSnapshot(
 		panic(errors.Join(ErrCouldNotMarshalPackageConfig, err))
 	}
 
-	outputFile, err := os.OpenFile(filepath.Join(server.VMPath, ConfigName), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.ModePerm)
+	outputFile, err := os.OpenFile(filepath.Join(fcServer.VMPath, ConfigName), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.ModePerm)
 	if err != nil {
 		panic(errors.Join(ErrCouldNotOpenPackageConfigFile, err))
 	}
@@ -291,7 +290,7 @@ func CreateSnapshot(
 		panic(errors.Join(ErrCouldNotWritePackageConfig, err))
 	}
 
-	if err := os.Chown(filepath.Join(server.VMPath, ConfigName), hypervisorConfiguration.UID, hypervisorConfiguration.GID); err != nil {
+	if err := os.Chown(filepath.Join(fcServer.VMPath, ConfigName), hypervisorConfiguration.UID, hypervisorConfiguration.GID); err != nil {
 		panic(errors.Join(ErrCouldNotChownPackageConfigFile, err))
 	}
 

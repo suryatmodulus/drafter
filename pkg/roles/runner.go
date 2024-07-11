@@ -3,6 +3,11 @@ package roles
 import (
 	"context"
 	"errors"
+	"fmt"
+	"github.com/google/uuid"
+	"github.com/loopholelabs/logging"
+	"github.com/loopholelabs/sentry/pkg/rpc"
+	"github.com/loopholelabs/sentry/pkg/server"
 	"io"
 	"net"
 	"net/http"
@@ -150,7 +155,7 @@ func StartRunner(
 		cancelFirecrackerCtx()
 	}()
 
-	server, err := firecracker.StartFirecrackerServer(
+	fcServer, err := firecracker.StartFirecrackerServer(
 		firecrackerCtx, // We use firecrackerCtx (which depends on hypervisorCtx, not internalCtx) here since this resource outlives the function call
 
 		hypervisorConfiguration.FirecrackerBin,
@@ -172,19 +177,19 @@ func StartRunner(
 		panic(errors.Join(ErrCouldNotStartFirecrackerServer, err))
 	}
 
-	runner.VMPath = server.VMPath
+	runner.VMPath = fcServer.VMPath
 
 	// We intentionally don't call `wg.Add` and `wg.Done` here since we return the process's wait method
 	// We still need to `defer handleGoroutinePanic()()` here however so that we catch any errors during this call
 	handleGoroutinePanics(false, func() {
-		if err := server.Wait(); err != nil {
+		if err := fcServer.Wait(); err != nil {
 			panic(errors.Join(ErrCouldNotWaitForFirecracker, err))
 		}
 	})
 
-	runner.Wait = server.Wait
+	runner.Wait = fcServer.Wait
 	runner.Close = func() error {
-		if err := server.Close(); err != nil {
+		if err := fcServer.Close(); err != nil {
 			return errors.Join(ErrCouldNotCloseServer, err)
 		}
 
@@ -226,8 +231,7 @@ func StartRunner(
 		defer ongoingResumeWg.Done()
 
 		var (
-			agent                   *ipc.AgentServer
-			acceptingAgent          *ipc.AcceptingAgentServer
+			sentry                  *server.Server
 			suspendOnPanicWithError = false
 		)
 
@@ -266,7 +270,7 @@ func StartRunner(
 			}
 
 			if snapshotLoadConfiguration.ExperimentalMapPrivate {
-				if err := server.Close(); err != nil {
+				if err := fcServer.Close(); err != nil {
 					return errors.Join(ErrCouldNotCloseServer, err)
 				}
 
@@ -278,7 +282,7 @@ func StartRunner(
 					{stateName, stateCopyName, snapshotLoadConfiguration.ExperimentalMapPrivateStateOutput},
 					{memoryName, memoryCopyName, snapshotLoadConfiguration.ExperimentalMapPrivateMemoryOutput},
 				} {
-					inputFile, err := os.Open(filepath.Join(server.VMPath, device[1]))
+					inputFile, err := os.Open(filepath.Join(fcServer.VMPath, device[1]))
 					if err != nil {
 						return errors.Join(ErrCouldNotOpenInputFile, err)
 					}
@@ -289,7 +293,7 @@ func StartRunner(
 						addPadding = true
 					)
 					if outputPath == "" {
-						outputPath = filepath.Join(server.VMPath, device[0])
+						outputPath = filepath.Join(fcServer.VMPath, device[0])
 						addPadding = false
 					}
 
@@ -330,17 +334,9 @@ func StartRunner(
 					if suspendOnPanicWithError {
 						suspendCtx, cancelSuspendCtx := context.WithTimeout(rescueCtx, rescueTimeout)
 						defer cancelSuspendCtx()
-
-						// Connections need to be closed before creating the snapshot
-						if acceptingAgent != nil && acceptingAgent.Close != nil {
-							if e := acceptingAgent.Close(); e != nil {
-								errs = errors.Join(errs, ErrCouldNotCloseAcceptingAgent, e)
-							}
+						if sentry != nil {
+							_ = sentry.Close()
 						}
-						if agent != nil && agent.Close != nil {
-							agent.Close()
-						}
-
 						// If a resume failed, flush the snapshot so that we can re-try
 						if err := createSnapshot(suspendCtx); err != nil {
 							errs = errors.Join(errs, ErrCouldNotCreateRecoverySnapshot, err)
@@ -356,26 +352,27 @@ func StartRunner(
 		// We intentionally don't call `wg.Add` and `wg.Done` here since we return the process's wait method
 		// We still need to `defer handleGoroutinePanic()()` here however so that we catch any errors during this call
 		handleGoroutinePanics(false, func() {
-			if err := server.Wait(); err != nil {
+			if err := fcServer.Wait(); err != nil {
 				panic(errors.Join(ErrCouldNotWaitForFirecracker, err))
 			}
 		})
 
-		agent, err = ipc.StartAgentServer(
-			filepath.Join(server.VMPath, VSockName),
-			uint32(agentVSockPort),
-		)
+		sentryPath := fmt.Sprintf("%s_%d", filepath.Join(fcServer.VMPath, VSockName), agentVSockPort)
+		sentry, err = server.New(&server.Options{
+			UnixPath: sentryPath,
+			MaxConn:  32,
+			Logger:   logging.NewNoopLogger(),
+		})
 		if err != nil {
 			panic(errors.Join(ErrCouldNotStartAgentServer, err))
 		}
 
 		resumedRunner.Close = func() error {
-			agent.Close()
-
+			_ = sentry.Close()
 			return nil
 		}
 
-		if err := os.Chown(agent.VSockPath, hypervisorConfiguration.UID, hypervisorConfiguration.GID); err != nil {
+		if err := os.Chown(sentryPath, hypervisorConfiguration.UID, hypervisorConfiguration.GID); err != nil {
 			panic(errors.Join(ErrCouldNotChownVSockPath, err))
 		}
 
@@ -397,33 +394,13 @@ func StartRunner(
 			}
 
 			suspendOnPanicWithError = true
-
-			acceptingAgent, err = agent.Accept(resumeSnapshotAndAcceptCtx, ctx)
-			if err != nil {
-				panic(errors.Join(ErrCouldNotAcceptAgent, err))
-			}
 		}
 
-		// We intentionally don't call `wg.Add` and `wg.Done` here since we return the process's wait method
-		// We still need to `defer handleGoroutinePanic()()` here however so that we catch any errors during this call
-		handleGoroutinePanics(false, func() {
-			if err := acceptingAgent.Wait(); err != nil {
-				panic(errors.Join(ErrCouldNotWaitForAcceptingAgent, err))
-			}
-		})
-
-		resumedRunner.Wait = acceptingAgent.Wait
 		resumedRunner.Close = func() error {
-			if err := acceptingAgent.Close(); err != nil {
-				return errors.Join(ErrCouldNotCloseAcceptingAgent, err)
-			}
-
-			agent.Close()
-
+			_ = sentry.Close()
 			if err := resumedRunner.Wait(); err != nil {
 				return errors.Join(ErrCouldNotWaitForAcceptingAgent, err)
 			}
-
 			return nil
 		}
 
@@ -431,7 +408,14 @@ func StartRunner(
 			afterResumeCtx, cancelAfterResumeCtx := context.WithTimeout(internalCtx, resumeTimeout)
 			defer cancelAfterResumeCtx()
 
-			if err := acceptingAgent.Remote.AfterResume(afterResumeCtx); err != nil {
+			request := rpc.Request{
+				UUID: uuid.New(),
+				Type: ipc.AfterResumeType,
+				Data: nil,
+			}
+			var response rpc.Response
+			err = sentry.Do(afterResumeCtx, &request, &response)
+			if err != nil {
 				panic(errors.Join(ErrCouldNotCallAfterResumeRPC, err))
 			}
 		}
@@ -456,19 +440,21 @@ func StartRunner(
 		}
 
 		resumedRunner.SuspendAndCloseAgentServer = func(ctx context.Context, suspendTimeout time.Duration) error {
-			suspendCtx, cancelSuspendCtx := context.WithTimeout(ctx, suspendTimeout)
-			defer cancelSuspendCtx()
+			suspendCtx, cancel := context.WithTimeout(ctx, suspendTimeout)
+			defer cancel()
 
-			if err := acceptingAgent.Remote.BeforeSuspend(suspendCtx); err != nil {
-				return errors.Join(ErrCouldNotCallBeforeSuspendRPC, err)
+			request := rpc.Request{
+				UUID: uuid.New(),
+				Type: ipc.BeforeSuspendType,
+				Data: nil,
 			}
+			var response rpc.Response
 
-			// Connections need to be closed before creating the snapshot
-			if err := acceptingAgent.Close(); err != nil {
-				return errors.Join(ErrCouldNotCloseAcceptingAgent, err)
+			err = sentry.Do(suspendCtx, &request, &response)
+			if err != nil {
+				panic(errors.Join(ErrCouldNotCallBeforeSuspendRPC, err))
 			}
-
-			agent.Close()
+			_ = sentry.Close()
 
 			if err := createSnapshot(suspendCtx); err != nil {
 				return errors.Join(ErrCouldNotCreateSnapshot, err)

@@ -6,8 +6,8 @@ Requires=@DRAFTER_LIVENESS_SYSTEMD_DEPENDENCY@
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/drafter-liveness --vsock-port @DRAFTER_LIVENESS_VSOCK_PORT@
-StandardOutput=journal+console
-StandardError=journal+console
+StandardOutput=file:/dev/kmsg
+StandardError=file:/dev/kmsg
 
 [Install]
 WantedBy=multi-user.target
