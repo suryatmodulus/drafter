@@ -142,7 +142,7 @@ func main() {
 		}
 	}()
 
-	ctx, handlePanics, handleGoroutinePanics, cancel, wait, _ := utils.GetPanicHandler(
+	ctx, handlePanics, _, cancel, wait, _ := utils.GetPanicHandler(
 		ctx,
 		&errs,
 		utils.GetPanicHandlerHooks{},
@@ -195,16 +195,6 @@ func main() {
 		roles.MemoryName,
 	)
 
-	if runner.Wait != nil {
-		defer func() {
-			defer handlePanics(true)()
-
-			if err := runner.Wait(); err != nil {
-				panic(err)
-			}
-		}()
-	}
-
 	if err != nil {
 		panic(err)
 	}
@@ -216,12 +206,6 @@ func main() {
 			panic(err)
 		}
 	}()
-
-	handleGoroutinePanics(true, func() {
-		if err := runner.Wait(); err != nil {
-			panic(err)
-		}
-	})
 
 	for index, device := range devices {
 		log.Println("Requested local device", index, "with name", device.Name)
@@ -272,8 +256,8 @@ func main() {
 			panic(roles.ErrCouldNotGetDeviceStat)
 		}
 
-		deviceMajor := uint64(deviceStat.Rdev / 256)
-		deviceMinor := uint64(deviceStat.Rdev % 256)
+		deviceMajor := deviceStat.Rdev / 256
+		deviceMinor := deviceStat.Rdev % 256
 
 		deviceID := int((deviceMajor << 8) | deviceMinor)
 
@@ -321,12 +305,6 @@ func main() {
 		}
 	}()
 
-	handleGoroutinePanics(true, func() {
-		if err := resumedRunner.Wait(); err != nil {
-			panic(err)
-		}
-	})
-
 	log.Println("Resumed VM in", time.Since(before), "on", runner.VMPath)
 
 	bubbleSignals = true
@@ -335,7 +313,7 @@ func main() {
 	case <-ctx.Done():
 		return
 
-	case <-done:
+	default:
 		break
 	}
 

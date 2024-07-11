@@ -73,7 +73,7 @@ func CreateSnapshot(
 	networkConfiguration NetworkConfiguration,
 	agentConfiguration AgentConfiguration,
 ) (errs error) {
-	ctx, handlePanics, handleGoroutinePanics, cancel, wait, _ := utils.GetPanicHandler(
+	ctx, handlePanics, _, cancel, wait, _ := utils.GetPanicHandler(
 		ctx,
 		&errs,
 		utils.GetPanicHandlerHooks{},
@@ -109,12 +109,6 @@ func CreateSnapshot(
 	}
 	defer fcServer.Close()
 	defer os.RemoveAll(filepath.Dir(fcServer.VMPath)) // Remove `firecracker/$id`, not just `firecracker/$id/root`
-
-	handleGoroutinePanics(true, func() {
-		if err := fcServer.Wait(); err != nil {
-			panic(errors.Join(ErrCouldNotWaitForFirecrackerServer, err))
-		}
-	})
 
 	liveness := ipc.NewLivenessServer(
 		filepath.Join(fcServer.VMPath, VSockName),

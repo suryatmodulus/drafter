@@ -19,7 +19,6 @@ var (
 	errSignalKilled = errors.New("signal: killed")
 
 	ErrNoSocketCreated                = errors.New("no socket created")
-	ErrFirecrackerExited              = errors.New("firecracker exited")
 	ErrCouldNotCreateVMPathDirectory  = errors.New("could not create VM path directory")
 	ErrCouldNotCreateInotifyWatcher   = errors.New("could not create inotify watcher")
 	ErrCouldNotAddInotifyWatch        = errors.New("could not add inotify watch")
@@ -27,7 +26,6 @@ var (
 	ErrCouldNotStartFirecrackerServer = errors.New("could not start firecracker server")
 	ErrCouldNotCloseWatcher           = errors.New("could not close watcher")
 	ErrCouldNotCloseServer            = errors.New("could not close server")
-	ErrCouldNotWaitForFirecracker     = errors.New("could not wait for firecracker")
 )
 
 const (
@@ -36,7 +34,6 @@ const (
 
 type FirecrackerServer struct {
 	VMPath string
-	Wait   func() error
 	Close  func() error
 }
 
@@ -140,33 +137,6 @@ func StartFirecrackerServer(
 	var closeLock sync.Mutex
 	closed := false
 
-	// We can only run this once since `cmd.Wait()` releases resources after the first call
-	server.Wait = sync.OnceValue(func() error {
-		if err := cmd.Wait(); err != nil {
-			closeLock.Lock()
-			defer closeLock.Unlock()
-
-			if closed && (err.Error() == errSignalKilled.Error()) { // Don't treat killed errors as errors if we killed the process
-				return nil
-			}
-
-			return errors.Join(ErrFirecrackerExited, err)
-		}
-
-		return nil
-	})
-
-	// We intentionally don't call `wg.Add` and `wg.Done` here - we are ok with leaking this
-	// goroutine since we return the process, which allows tracking errors and stopping this goroutine
-	// and waiting for it to be stopped. We still need to `defer handleGoroutinePanic()()` however so that
-	// any errors we get as we're polling the socket path directory are caught
-	// It's important that we start this _after_ calling `cmd.Start`, otherwise our process would be nil
-	handleGoroutinePanics(false, func() {
-		if err := server.Wait(); err != nil {
-			panic(errors.Join(ErrCouldNotWaitForFirecracker, err))
-		}
-	})
-
 	handleGoroutinePanics(true, func() {
 		// Cause the `range Watcher.Event` loop to break if context is cancelled, e.g. when command errors
 		<-internalCtx.Done()
@@ -222,8 +192,7 @@ func StartFirecrackerServer(
 
 			closeLock.Unlock()
 		}
-
-		return server.Wait()
+		return nil
 	}
 
 	return

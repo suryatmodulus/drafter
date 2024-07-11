@@ -130,7 +130,6 @@ type MakeMigratableDevice struct {
 }
 
 type ResumedPeer struct {
-	Wait  func() error
 	Close func() error
 
 	SuspendAndCloseAgentServer func(ctx context.Context, resumeTimeout time.Duration) error
@@ -223,7 +222,6 @@ type peerStage5 struct {
 type Peer struct {
 	VMPath string
 
-	Wait  func() error
 	Close func() error
 
 	MigrateFrom func(
@@ -257,7 +255,7 @@ func StartPeer(
 ) {
 	peer = &Peer{}
 
-	_, handlePanics, handleGoroutinePanics, cancel, wait, _ := utils.GetPanicHandler(
+	_, handlePanics, _, cancel, wait, _ := utils.GetPanicHandler(
 		hypervisorCtx,
 		&errs,
 		utils.GetPanicHandlerHooks{},
@@ -277,20 +275,12 @@ func StartPeer(
 	)
 
 	// We set both of these even if we return an error since we need to have a way to wait for rescue operations to complete
-	peer.Wait = runner.Wait
 	peer.Close = func() error {
 		if runner.Close != nil {
 			if err := runner.Close(); err != nil {
 				return err
 			}
 		}
-
-		if peer.Wait != nil {
-			if err := peer.Wait(); err != nil {
-				return err
-			}
-		}
-
 		return nil
 	}
 
@@ -299,13 +289,6 @@ func StartPeer(
 	}
 
 	peer.VMPath = runner.VMPath
-
-	// We don't track this because we return the wait function
-	handleGoroutinePanics(false, func() {
-		if err := runner.Wait(); err != nil {
-			panic(err)
-		}
-	})
 
 	peer.MigrateFrom = func(
 		ctx context.Context,
@@ -871,7 +854,6 @@ func StartPeer(
 			}
 
 			return &ResumedPeer{
-				Wait:  resumedRunner.Wait,
 				Close: resumedRunner.Close,
 
 				SuspendAndCloseAgentServer: resumedRunner.SuspendAndCloseAgentServer,

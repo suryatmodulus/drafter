@@ -297,17 +297,6 @@ func main() {
 		roles.StateName,
 		roles.MemoryName,
 	)
-
-	if peer.Wait != nil {
-		defer func() {
-			defer handlePanics(true)()
-
-			if err := peer.Wait(); err != nil {
-				panic(err)
-			}
-		}()
-	}
-
 	if err != nil {
 		panic(err)
 	}
@@ -319,12 +308,6 @@ func main() {
 			panic(err)
 		}
 	}()
-
-	handleGoroutinePanics(true, func() {
-		if err := peer.Wait(); err != nil {
-			panic(err)
-		}
-	})
 
 	migrateFromDevices := []roles.MigrateFromDevice{}
 	for _, device := range devices {
@@ -438,12 +421,6 @@ func main() {
 			panic(err)
 		}
 	}()
-
-	handleGoroutinePanics(true, func() {
-		if err := resumedPeer.Wait(); err != nil {
-			panic(err)
-		}
-	})
 
 	log.Println("Resumed VM in", time.Since(before), "on", peer.VMPath)
 

@@ -97,7 +97,6 @@ func main() {
 				cmd := exec.CommandContext(ctx, *shellCmd, "-c", *afterResumeCmd)
 				cmd.Stdout = os.Stdout
 				cmd.Stderr = os.Stderr
-
 				if err := cmd.Run(); err != nil {
 					return err
 				}
@@ -106,10 +105,12 @@ func main() {
 			return nil
 		})
 
+	logger := logging.NewConsoleLogger(os.Stdout)
+	logger.SetLevel(logging.DebugLevel)
 	sentry, err := client.New(&client.Options{
 		Handle: handleFunc,
 		Dial:   dialFunc,
-		Logger: logging.NewNoopLogger(),
+		Logger: logger,
 	})
 	if err != nil {
 		panic(err)

@@ -70,7 +70,6 @@ type SnapshotLoadConfiguration struct {
 type Runner struct {
 	VMPath string
 
-	Wait  func() error
 	Close func() error
 
 	Resume func(
@@ -89,7 +88,6 @@ type Runner struct {
 }
 
 type ResumedRunner struct {
-	Wait  func() error
 	Close func() error
 
 	Msync                      func(ctx context.Context) error
@@ -103,12 +101,8 @@ var (
 	ErrCouldNotCloseServer               = errors.New("could not close server")
 	ErrCouldNotRemoveVMDir               = errors.New("could not remove VM directory")
 	ErrCouldNotStartAgentServer          = errors.New("could not start agent server")
-	ErrCouldNotCloseAgent                = errors.New("could not close agent")
 	ErrCouldNotChownVSockPath            = errors.New("could not change ownership of vsock path")
 	ErrCouldNotResumeSnapshot            = errors.New("could not resume snapshot")
-	ErrCouldNotAcceptAgent               = errors.New("could not accept agent")
-	ErrCouldNotWaitForAcceptingAgent     = errors.New("could not wait for accepting agent")
-	ErrCouldNotCloseAcceptingAgent       = errors.New("could not close accepting agent")
 	ErrCouldNotCallAfterResumeRPC        = errors.New("could not call AfterResume RPC")
 	ErrCouldNotCallBeforeSuspendRPC      = errors.New("could not call BeforeSuspend RPC")
 	ErrCouldNotCreateSnapshot            = errors.New("could not create snapshot")
@@ -130,7 +124,7 @@ func StartRunner(
 ) {
 	runner = &Runner{}
 
-	_, handlePanics, handleGoroutinePanics, cancel, wait, _ := utils.GetPanicHandler(
+	_, handlePanics, _, cancel, wait, _ := utils.GetPanicHandler(
 		hypervisorCtx,
 		&errs,
 		utils.GetPanicHandlerHooks{},
@@ -179,22 +173,9 @@ func StartRunner(
 
 	runner.VMPath = fcServer.VMPath
 
-	// We intentionally don't call `wg.Add` and `wg.Done` here since we return the process's wait method
-	// We still need to `defer handleGoroutinePanic()()` here however so that we catch any errors during this call
-	handleGoroutinePanics(false, func() {
-		if err := fcServer.Wait(); err != nil {
-			panic(errors.Join(ErrCouldNotWaitForFirecracker, err))
-		}
-	})
-
-	runner.Wait = fcServer.Wait
 	runner.Close = func() error {
 		if err := fcServer.Close(); err != nil {
 			return errors.Join(ErrCouldNotCloseServer, err)
-		}
-
-		if err := runner.Wait(); err != nil {
-			return errors.Join(ErrCouldNotWaitForFirecracker, err)
 		}
 
 		if err := os.RemoveAll(filepath.Dir(runner.VMPath)); err != nil {
@@ -274,10 +255,6 @@ func StartRunner(
 					return errors.Join(ErrCouldNotCloseServer, err)
 				}
 
-				if err := runner.Wait(); err != nil {
-					return errors.Join(ErrCouldNotWaitForFirecracker, err)
-				}
-
 				for _, device := range [][3]string{
 					{stateName, stateCopyName, snapshotLoadConfiguration.ExperimentalMapPrivateStateOutput},
 					{memoryName, memoryCopyName, snapshotLoadConfiguration.ExperimentalMapPrivateMemoryOutput},
@@ -326,7 +303,7 @@ func StartRunner(
 			return nil
 		}
 
-		internalCtx, handlePanics, handleGoroutinePanics, cancel, wait, _ := utils.GetPanicHandler(
+		internalCtx, handlePanics, _, cancel, wait, _ := utils.GetPanicHandler(
 			ctx,
 			&errs,
 			utils.GetPanicHandlerHooks{
@@ -349,19 +326,13 @@ func StartRunner(
 		defer cancel()
 		defer handlePanics(false)()
 
-		// We intentionally don't call `wg.Add` and `wg.Done` here since we return the process's wait method
-		// We still need to `defer handleGoroutinePanic()()` here however so that we catch any errors during this call
-		handleGoroutinePanics(false, func() {
-			if err := fcServer.Wait(); err != nil {
-				panic(errors.Join(ErrCouldNotWaitForFirecracker, err))
-			}
-		})
-
+		logger := logging.NewConsoleLogger(os.Stdout)
+		logger.SetLevel(logging.DebugLevel)
 		sentryPath := fmt.Sprintf("%s_%d", filepath.Join(fcServer.VMPath, VSockName), agentVSockPort)
 		sentry, err = server.New(&server.Options{
 			UnixPath: sentryPath,
 			MaxConn:  32,
-			Logger:   logging.NewNoopLogger(),
+			Logger:   logger,
 		})
 		if err != nil {
 			panic(errors.Join(ErrCouldNotStartAgentServer, err))
@@ -398,9 +369,6 @@ func StartRunner(
 
 		resumedRunner.Close = func() error {
 			_ = sentry.Close()
-			if err := resumedRunner.Wait(); err != nil {
-				return errors.Join(ErrCouldNotWaitForAcceptingAgent, err)
-			}
 			return nil
 		}
 
