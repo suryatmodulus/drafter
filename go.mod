@@ -11,7 +11,7 @@ require (
 	github.com/klauspost/compress v1.17.9
 	github.com/lithammer/shortuuid/v4 v4.0.0
 	github.com/loopholelabs/logging v0.1.5
-	github.com/loopholelabs/sentry v0.1.2
+	github.com/loopholelabs/sentry v0.1.3
 	github.com/loopholelabs/silo v0.0.8
 	github.com/metal-stack/go-ipam v1.14.1
 	github.com/vishvananda/netlink v1.1.0

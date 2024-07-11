@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -243,8 +244,13 @@ func CreateSnapshot(
 			Data: nil,
 		}
 		var response rpc.Response
-
-		err = sentry.Do(beforeSuspendCtx, &request, &response)
+		for i := 0; i < 5; i++ {
+			err = sentry.Do(beforeSuspendCtx, &request, &response)
+			if err == nil || !errors.Is(err, context.Canceled) {
+				break
+			}
+			log.Printf("retrying BeforeSuspend RPC (%d)\n", i)
+		}
 		if err != nil {
 			panic(errors.Join(ErrCouldNotBeforeSuspend, err))
 		}

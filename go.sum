@@ -117,6 +117,7 @@ github.com/loopholelabs/polyglot/v2 v2.0.1 h1:JVSrXwx3jzr6/IrUe7Y1f7R3I6bFaVjLlP
 github.com/loopholelabs/polyglot/v2 v2.0.1/go.mod h1:kFoSKvnKAWmV0ICfbaCHDv/+cz5LSuA+xXG4WtYV/z4=
 github.com/loopholelabs/sentry v0.1.2 h1:dLbd80fsDaa5VHJb0aehZcHvY+ewTRLuXkN8MsbIqGM=
 github.com/loopholelabs/sentry v0.1.2/go.mod h1:+6wV92JNnSUnuddilG7VF0DfvF5AbsU2gqNUj06Jk2A=
+github.com/loopholelabs/sentry v0.1.3/go.mod h1:+6wV92JNnSUnuddilG7VF0DfvF5AbsU2gqNUj06Jk2A=
 github.com/loopholelabs/silo v0.0.8 h1:fsqm6VQDlFJt65wo1LCBaAlsGrSjTNGBNP2ypJAWP+A=
 github.com/loopholelabs/silo v0.0.8/go.mod h1:fzq0X9KAWGPCWK4uZ96DgF9Ed+eu9wBmpB5ZX64OHMk=
 github.com/lufia/plan9stats v0.0.0-20240513124658-fba389f38bae h1:dIZY4ULFcto4tAFlj1FYZl8ztUZ13bdq+PLY+NOfbyI=

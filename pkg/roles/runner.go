@@ -9,6 +9,7 @@ import (
 	"github.com/loopholelabs/sentry/pkg/rpc"
 	"github.com/loopholelabs/sentry/pkg/server"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -382,7 +383,13 @@ func StartRunner(
 				Data: nil,
 			}
 			var response rpc.Response
-			err = sentry.Do(afterResumeCtx, &request, &response)
+			for i := 0; i < 5; i++ {
+				err = sentry.Do(afterResumeCtx, &request, &response)
+				if err == nil || !errors.Is(err, context.Canceled) {
+					break
+				}
+				log.Printf("retrying AfterResume RPC (%d)\n", i)
+			}
 			if err != nil {
 				panic(errors.Join(ErrCouldNotCallAfterResumeRPC, err))
 			}
@@ -418,7 +425,13 @@ func StartRunner(
 			}
 			var response rpc.Response
 
-			err = sentry.Do(suspendCtx, &request, &response)
+			for i := 0; i < 5; i++ {
+				err = sentry.Do(suspendCtx, &request, &response)
+				if err == nil || !errors.Is(err, context.Canceled) {
+					break
+				}
+				log.Printf("retrying BeforeSuspend RPC (%d)\n", i)
+			}
 			if err != nil {
 				panic(errors.Join(ErrCouldNotCallBeforeSuspendRPC, err))
 			}
