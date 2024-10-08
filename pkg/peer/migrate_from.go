@@ -20,6 +20,7 @@ import (
 	"github.com/loopholelabs/drafter/pkg/snapshotter"
 	"github.com/loopholelabs/drafter/pkg/terminator"
 	"github.com/loopholelabs/goroutine-manager/pkg/manager"
+	"github.com/loopholelabs/logging/types"
 	"github.com/loopholelabs/silo/pkg/storage"
 	"github.com/loopholelabs/silo/pkg/storage/config"
 	"github.com/loopholelabs/silo/pkg/storage/device"
@@ -42,6 +43,7 @@ type MigrateFromDevice[L ipc.AgentServerLocal, R ipc.AgentServerRemote[G], G any
 }
 
 func (peer *Peer[L, R, G]) MigrateFrom(
+	logger types.Logger,
 	ctx context.Context,
 
 	devices []MigrateFromDevice[L, R, G],
@@ -112,6 +114,7 @@ func (peer *Peer[L, R, G]) MigrateFrom(
 		pro *protocol.ProtocolRW
 	)
 	if len(readers) > 0 && len(writers) > 0 { // Only open the protocol if we want passed in readers and writers
+		logger.Info().Msg("opening new protocol rw")
 		pro = protocol.NewProtocolRW(
 			protocolCtx, // We don't track this because we return the wait function
 			readers,
