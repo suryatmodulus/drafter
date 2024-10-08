@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -68,6 +69,7 @@ func (migratablePeer *MigratablePeer[L, R, G]) MigrateTo(
 	defer goroutineManager.StopAllGoroutines()
 	defer goroutineManager.CreateBackgroundPanicCollector()()
 
+	log.Println("Making protocol RW")
 	pro := protocol.NewProtocolRW(
 		goroutineManager.Context(),
 		readers,
@@ -75,6 +77,7 @@ func (migratablePeer *MigratablePeer[L, R, G]) MigrateTo(
 		nil,
 	)
 
+	log.Println("Starting protocol RW handle function")
 	goroutineManager.StartForegroundGoroutine(func(_ context.Context) {
 		if err := pro.Handle(); err != nil && !errors.Is(err, io.EOF) {
 			panic(errors.Join(registry.ErrCouldNotHandleProtocol, err))
@@ -139,7 +142,7 @@ func (migratablePeer *MigratablePeer[L, R, G]) MigrateTo(
 			migrateToDevice: *migrateToDevice,
 		})
 	}
-
+	log.Printf("about to do stage5Inputs: %+v\n", stage5Inputs)
 	_, deferFuncs, err := utils.ConcurrentMap(
 		stage5Inputs,
 		func(index int, input migrateToStage, _ *struct{}, _ func(deferFunc func() error)) error {
@@ -414,11 +417,11 @@ func (migratablePeer *MigratablePeer[L, R, G]) MigrateTo(
 			return nil
 		},
 	)
-
 	if err != nil {
 		panic(errors.Join(mounter.ErrCouldNotMigrateToDevice, err))
 	}
 
+	log.Println("did stage5Inputs")
 	for _, deferFuncs := range deferFuncs {
 		for _, deferFunc := range deferFuncs {
 			defer deferFunc() // We can safely ignore errors here since we never call `addDefer` with a function that could return an error
