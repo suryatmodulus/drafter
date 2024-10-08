@@ -152,6 +152,7 @@ func (migratablePeer *MigratablePeer[L, R, G]) MigrateTo(
 
 			logger.Info().Int("index", index).Msgf("doing dev info")
 			if err := to.SendDevInfo(input.prev.prev.prev.name, input.prev.prev.prev.blockSize, ""); err != nil {
+				logger.Error().Int("index", index).Err(err).Msgf("dev info Errored out!")
 				return errors.Join(mounter.ErrCouldNotSendDevInfo, err)
 			}
 			logger.Info().Int("index", index).Msgf("done dev info")
