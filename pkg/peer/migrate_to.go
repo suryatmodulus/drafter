@@ -15,6 +15,7 @@ import (
 	"github.com/loopholelabs/drafter/pkg/registry"
 	"github.com/loopholelabs/drafter/pkg/runner"
 	"github.com/loopholelabs/goroutine-manager/pkg/manager"
+	"github.com/loopholelabs/logging/types"
 	"github.com/loopholelabs/silo/pkg/storage"
 	"github.com/loopholelabs/silo/pkg/storage/migrator"
 	"github.com/loopholelabs/silo/pkg/storage/protocol"
@@ -47,6 +48,7 @@ type MigratablePeer[L ipc.AgentServerLocal, R ipc.AgentServerRemote[G], G any] s
 }
 
 func (migratablePeer *MigratablePeer[L, R, G]) MigrateTo(
+	logger types.Logger,
 	ctx context.Context,
 
 	devices []mounter.MigrateToDevice,
@@ -68,6 +70,7 @@ func (migratablePeer *MigratablePeer[L, R, G]) MigrateTo(
 	defer goroutineManager.StopAllGoroutines()
 	defer goroutineManager.CreateBackgroundPanicCollector()()
 
+	logger.Info().Msg("doing new protocol rw")
 	pro := protocol.NewProtocolRW(
 		goroutineManager.Context(),
 		readers,
@@ -75,6 +78,7 @@ func (migratablePeer *MigratablePeer[L, R, G]) MigrateTo(
 		nil,
 	)
 
+	logger.Info().Msg("doing new protocol rw handler")
 	goroutineManager.StartForegroundGoroutine(func(_ context.Context) {
 		if err := pro.Handle(); err != nil && !errors.Is(err, io.EOF) {
 			panic(errors.Join(registry.ErrCouldNotHandleProtocol, err))
@@ -140,11 +144,13 @@ func (migratablePeer *MigratablePeer[L, R, G]) MigrateTo(
 		})
 	}
 
+	logger.Info().Msgf("stage 5 inputs: %+v", stage5Inputs)
 	_, deferFuncs, err := utils.ConcurrentMap(
 		stage5Inputs,
 		func(index int, input migrateToStage, _ *struct{}, _ func(deferFunc func() error)) error {
 			to := protocol.NewToProtocol(input.prev.storage.Size(), uint32(index), pro)
 
+			logger.Info().Int("index", index).Msgf("doing dev info")
 			if err := to.SendDevInfo(input.prev.prev.prev.name, input.prev.prev.prev.blockSize, ""); err != nil {
 				return errors.Join(mounter.ErrCouldNotSendDevInfo, err)
 			}
@@ -156,6 +162,7 @@ func (migratablePeer *MigratablePeer[L, R, G]) MigrateTo(
 			devicesLeftToSend.Add(1)
 			if devicesLeftToSend.Load() >= int32(len(stage5Inputs)) {
 				goroutineManager.StartForegroundGoroutine(func(_ context.Context) {
+					logger.Info().Int("index", index).Msgf("doing device left to send")
 					if err := to.SendEvent(&packets.Event{
 						Type:       packets.EventCustom,
 						CustomType: byte(registry.EventCustomAllDevicesSent),
@@ -170,6 +177,7 @@ func (migratablePeer *MigratablePeer[L, R, G]) MigrateTo(
 			}
 
 			goroutineManager.StartForegroundGoroutine(func(_ context.Context) {
+				logger.Info().Int("index", index).Msgf("doing handle need at")
 				if err := to.HandleNeedAt(func(offset int64, length int32) {
 					// Prioritize blocks
 					endOffset := uint64(offset + int64(length))
@@ -188,6 +196,7 @@ func (migratablePeer *MigratablePeer[L, R, G]) MigrateTo(
 			})
 
 			goroutineManager.StartForegroundGoroutine(func(_ context.Context) {
+				logger.Info().Int("index", index).Msgf("doing handle not needed")
 				if err := to.HandleDontNeedAt(func(offset int64, length int32) {
 					// Deprioritize blocks
 					endOffset := uint64(offset + int64(length))
@@ -215,6 +224,7 @@ func (migratablePeer *MigratablePeer[L, R, G]) MigrateTo(
 			cfg.Locker_handler = func() {
 				defer goroutineManager.CreateBackgroundPanicCollector()()
 
+				logger.Info().Int("index", index).Msgf("doing pre lock")
 				if err := to.SendEvent(&packets.Event{
 					Type: packets.EventPreLock,
 				}); err != nil {
@@ -223,6 +233,7 @@ func (migratablePeer *MigratablePeer[L, R, G]) MigrateTo(
 
 				input.prev.storage.Lock()
 
+				logger.Info().Int("index", index).Msgf("doing post lock")
 				if err := to.SendEvent(&packets.Event{
 					Type: packets.EventPostLock,
 				}); err != nil {
@@ -232,6 +243,7 @@ func (migratablePeer *MigratablePeer[L, R, G]) MigrateTo(
 			cfg.Unlocker_handler = func() {
 				defer goroutineManager.CreateBackgroundPanicCollector()()
 
+				logger.Info().Int("index", index).Msgf("doing pre unlock")
 				if err := to.SendEvent(&packets.Event{
 					Type: packets.EventPreUnlock,
 				}); err != nil {
@@ -240,6 +252,7 @@ func (migratablePeer *MigratablePeer[L, R, G]) MigrateTo(
 
 				input.prev.storage.Unlock()
 
+				logger.Info().Int("index", index).Msgf("doing post unlock")
 				if err := to.SendEvent(&packets.Event{
 					Type: packets.EventPostUnlock,
 				}); err != nil {
@@ -264,13 +277,16 @@ func (migratablePeer *MigratablePeer[L, R, G]) MigrateTo(
 				return errors.Join(registry.ErrCouldNotCreateMigrator, err)
 			}
 
+			logger.Info().Int("index", index).Msgf("starting .Migrate")
 			if err := mig.Migrate(input.prev.totalBlocks); err != nil {
 				return errors.Join(mounter.ErrCouldNotMigrateBlocks, err)
 			}
 
+			logger.Info().Int("index", index).Msgf("waiting for .Migrate to complete")
 			if err := mig.WaitForCompletion(); err != nil {
 				return errors.Join(registry.ErrCouldNotWaitForMigrationCompletion, err)
 			}
+			logger.Info().Int("index", index).Msgf("woo it completed")
 
 			markDeviceAsReadyForAuthorityTransfer := sync.OnceFunc(func() {
 				devicesLeftToTransferAuthorityFor.Add(1)
@@ -282,9 +298,12 @@ func (migratablePeer *MigratablePeer[L, R, G]) MigrateTo(
 				ongoingMigrationsWg           sync.WaitGroup
 			)
 			for {
+				logger.Info().Int("index", index).Msgf("loopedy loop time")
+
 				suspendedVMLock.Lock()
 				// We only need to `msync` for the memory because `msync` only affects the memory
 				if !suspendedVM && input.prev.prev.prev.name == packager.MemoryName {
+					logger.Info().Int("index", index).Msgf("doing msync")
 					if err := migratablePeer.resumedRunner.Msync(goroutineManager.Context()); err != nil {
 						suspendedVMLock.Unlock()
 
@@ -321,6 +340,7 @@ func (migratablePeer *MigratablePeer[L, R, G]) MigrateTo(
 					goroutineManager.StartForegroundGoroutine(func(_ context.Context) {
 						defer ongoingMigrationsWg.Done()
 
+						logger.Info().Int("index", index).Msgf("doing migrate dirty")
 						if err := mig.MigrateDirty(blocks); err != nil {
 							panic(errors.Join(mounter.ErrCouldNotMigrateDirtyBlocks, err))
 						}
