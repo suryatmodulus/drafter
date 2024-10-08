@@ -119,6 +119,8 @@ github.com/lithammer/shortuuid/v4 v4.0.0 h1:QRbbVkfgNippHOS8PXDkti4NaWeyYfcBTHtw
 github.com/lithammer/shortuuid/v4 v4.0.0/go.mod h1:Zs8puNcrvf2rV9rTH51ZLLcj7ZXqQI3lv67aw4KiB1Y=
 github.com/loopholelabs/goroutine-manager v0.1.1 h1:qpN9XcfNKp7aw8YI3YoIisCWZHK7/bAdnXs28ZhkM70=
 github.com/loopholelabs/goroutine-manager v0.1.1/go.mod h1:d0r+/HNqnDR/6AXv4Mbz0dJZ7P0nATksCjkt5WWDsqA=
+github.com/loopholelabs/logging v0.3.0 h1:Rfo9fGdBk4nwbNdiLrVUF7JkYoC67dvGDodkRe81xF0=
+github.com/loopholelabs/logging v0.3.0/go.mod h1:uRDUydiqPqKbZkb0WoQ3dfyAcJ2iOMhxdEafZssLVv0=
 github.com/loopholelabs/silo v0.0.8 h1:fsqm6VQDlFJt65wo1LCBaAlsGrSjTNGBNP2ypJAWP+A=
 github.com/loopholelabs/silo v0.0.8/go.mod h1:fzq0X9KAWGPCWK4uZ96DgF9Ed+eu9wBmpB5ZX64OHMk=
 github.com/lufia/plan9stats v0.0.0-20240513124658-fba389f38bae h1:dIZY4ULFcto4tAFlj1FYZl8ztUZ13bdq+PLY+NOfbyI=

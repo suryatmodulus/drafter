@@ -154,6 +154,7 @@ func (migratablePeer *MigratablePeer[L, R, G]) MigrateTo(
 			if err := to.SendDevInfo(input.prev.prev.prev.name, input.prev.prev.prev.blockSize, ""); err != nil {
 				return errors.Join(mounter.ErrCouldNotSendDevInfo, err)
 			}
+			logger.Info().Int("index", index).Msgf("done dev info")
 
 			if hook := hooks.OnDeviceSent; hook != nil {
 				hook(uint32(index), input.prev.prev.prev.remote)
